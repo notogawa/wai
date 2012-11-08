@@ -37,7 +37,11 @@ runTLS tset set app = do
             { TLS.pWantClientCert = False
             , TLS.pAllowedVersions = [TLS.SSL3,TLS.TLS10,TLS.TLS11,TLS.TLS12]
             , TLS.pCiphers         = ciphers
-            , TLS.pCertificates    = [(cert, Just pk)]
+            , TLS.pCertificates    = zip cert (Just pk : repeat Nothing)
+            , TLS.pLogging         = TLS.defaultLogging
+                                     { TLS.loggingPacketSent = putStrLn . (">> " ++)
+                                     , TLS.loggingPacketRecv = putStrLn . ("<< " ++)
+                                     }
             }
     bracket
         (bindPort (settingsPort set) (settingsHost set))
@@ -58,7 +62,7 @@ runTLS tset set app = do
             let conn = Connection
                     { connSendMany = TLS.sendData ctx . L.fromChunks
                     , connSendAll = TLS.sendData ctx . L.fromChunks . return
-                    , connSendFile = \fp offset len _th -> C.runResourceT $ sourceFileRange fp (Just offset) (Just len) C.$$ CL.mapM_ (TLS.sendData ctx . L.fromChunks . return)
+                    , connSendFile = \fp offset len _th -> return $ C.runResourceT $ sourceFileRange fp (Just offset) (Just len) C.$$ CL.mapM_ (TLS.sendData ctx . L.fromChunks . return)
                     , connClose = do
                         TLS.bye ctx
                         hClose h
@@ -75,12 +79,12 @@ ciphers =
     , TLSExtra.cipher_RC4_128_SHA1
     ]
 
-readCertificate :: FilePath -> IO X509.X509
+readCertificate :: FilePath -> IO [X509.X509]
 readCertificate filepath = do
     certs <- rights . parseCerts . PEM.pemParseBS <$> B.readFile filepath
     case certs of
         []    -> error "no valid certificate found"
-        (x:_) -> return x
+        x -> return x
     where parseCerts (Right pems) = map (X509.decodeCertificate . L.fromChunks . (:[]) . PEM.pemContent)
                                   $ filter (flip elem ["CERTIFICATE", "TRUSTED CERTIFICATE"] . PEM.pemName) pems
           parseCerts (Left err) = error $ "cannot parse PEM file: " ++ err
